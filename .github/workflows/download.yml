@@ -1,9 +1,9 @@
 name: Download ZIPs
 
 on:
-  push:
-    paths:
-      - 'zip_links.txt'   # 仅当 zip_links.txt 被推送时触发
+#   push:
+#     paths:
+#       - 'zip_links.txt'   # 仅当 zip_links.txt 被推送时触发
   workflow_dispatch:       # 也允许手动触发
 
 jobs:
