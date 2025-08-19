@@ -6,6 +6,9 @@ on:
       - 'zip_links.txt'
   workflow_dispatch:
 
+permissions:
+  contents: write   # 允许创建 Release
+
 jobs:
   download:
     runs-on: ubuntu-latest
@@ -24,9 +27,16 @@ jobs:
       - name: Run downloader & pack
         run: python download.py
 
-      - name: Upload bundles
-        uses: actions/upload-artifact@v4
+      # 把 bundles/ 目录下所有 zip 打到 release
+      - name: Create / update Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: zip-bundles
-          path: bundles/
-          retention-days: 30
+          tag_name: release-${{ github.run_number }}
+          name: "Auto Release #${{ github.run_number }}"
+          body: |
+            自动打包的 ZIP 文件列表：
+            - 来源文件：`zip_links.txt`
+            - 生成时间：${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+          files: bundles/*.zip
+          draft: false
+          prerelease: false
