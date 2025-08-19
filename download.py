@@ -1,58 +1,62 @@
 #!/usr/bin/env python3
 """
-从 zip_links.txt 中逐行读取 ZIP 链接并下载到 downloads/ 目录。
-要求：
-  - 每行一个 URL，允许空行/注释行（# 开头）
-  - 支持 HTTP/HTTPS 重定向
-  - 如果下载失败会打印错误并继续
+并行下载 zip_links.txt 中的所有 ZIP 链接
 """
 import os
 import sys
 import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from tqdm import tqdm
 
 LINKS_FILE = "zip_links.txt"
 DOWNLOAD_DIR = Path("downloads")
-CHUNK_SIZE = 8192
-TIMEOUT = 30  # 秒
+WORKERS = min(32, (os.cpu_count() or 1) * 5)  # GitHub-hosted runner 通常是 2 vCPU
+CHUNK = 8192
+TIMEOUT = 30
+RETRY = 3
+
+session = requests.Session()
+session.headers.update({"User-Agent": "github-actions/zip-downloader"})
 
 def read_links(path: str):
-    """读取并过滤出合法的链接"""
-    if not os.path.isfile(path):
-        print(f"❌ 文件 {path} 不存在")
+    if not Path(path).is_file():
+        print(f"❌ {path} 不存在")
         sys.exit(1)
-
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            yield line
+            if line and not line.startswith("#"):
+                yield line
 
-def download_file(url: str, dest: Path):
-    """流式下载到本地"""
-    session = requests.Session()
-    session.headers.update({"User-Agent": "github-actions/zip-downloader"})
-    try:
-        with session.get(url, stream=True, timeout=TIMEOUT) as r:
-            r.raise_for_status()
-            total = int(r.headers.get("content-length", 0))
-            fname = Path(url).name or "download.zip"
-            target = dest / fname
-            target.parent.mkdir(parents=True, exist_ok=True)
+def _fetch(url: str, dest: Path):
+    """真正下载的函数，支持重试"""
+    for attempt in range(1, RETRY + 1):
+        try:
+            with session.get(url, stream=True, timeout=TIMEOUT) as r:
+                r.raise_for_status()
+                total = int(r.headers.get("content-length", 0))
+                fname = Path(url).name or "download.zip"
+                target = dest / fname
+                target.parent.mkdir(parents=True, exist_ok=True)
 
-            with tqdm(total=total, unit="B", unit_scale=True, desc=fname) as bar:
-                with open(target, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                with open(target, "wb") as f, tqdm(
+                    total=total,
+                    unit="B",
+                    unit_scale=True,
+                    desc=f"{fname} ({attempt})",
+                    leave=False,
+                ) as bar:
+                    for chunk in r.iter_content(chunk_size=CHUNK):
                         if chunk:
                             f.write(chunk)
                             bar.update(len(chunk))
-            return target
-    except Exception as e:
-        print(f"⚠️ 下载失败 {url} : {e}")
-        return None
+                return url, True
+        except Exception as e:
+            if attempt == RETRY:
+                return url, False
+            time.sleep(2 ** attempt)
 
 def main():
     DOWNLOAD_DIR.mkdir(exist_ok=True)
@@ -61,13 +65,17 @@ def main():
         print("⚠️ 未发现有效链接")
         return
 
-    print(f"📦 准备下载 {len(links)} 个 ZIP 文件 …")
-    success = 0
-    for url in links:
-        if download_file(url, DOWNLOAD_DIR):
-            success += 1
-        time.sleep(0.5)  # 轻量限速，避免过快
-    print(f"✅ 完成，共成功 {success}/{len(links)} 个")
+    print(f"📦 启动 {WORKERS} 线程并行下载 {len(links)} 个文件")
+    ok = 0
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        future_to_url = {pool.submit(_fetch, url, DOWNLOAD_DIR): url for url in links}
+        for fut in tqdm(as_completed(future_to_url), total=len(links), desc="总进度"):
+            url, success = fut.result()
+            if success:
+                ok += 1
+            else:
+                print(f"⚠️ 多次重试后仍失败: {url}")
+    print(f"✅ 完成，成功 {ok}/{len(links)}")
 
 if __name__ == "__main__":
     main()
