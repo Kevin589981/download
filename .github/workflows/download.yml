@@ -21,12 +21,12 @@ jobs:
           python -m pip install -U pip
           pip install -r requirements.txt
 
-      - name: Run parallel downloader
-        run: python download.py        # 默认线程数 = CPU 核心 * 5
+      - name: Run downloader & pack
+        run: python download.py
 
-      - name: Upload artifacts
+      - name: Upload bundles
         uses: actions/upload-artifact@v4
         with:
-          name: downloaded-zips
-          path: downloads/
+          name: zip-bundles
+          path: bundles/
           retention-days: 30
